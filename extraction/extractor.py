@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MODEL = "claude-sonnet-4-20250514"
+MODEL = "claude-opus-4-20250514"
 MAX_TOKENS = 8192
 
 # JSON Schema that every extracted rule tree must conform to
