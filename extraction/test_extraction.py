@@ -46,7 +46,7 @@ def test_pdf_extraction():
 def test_segmentation(pages):
     """Test that we can find the criteria section."""
     print("\n=== Test: Section Segmentation ===")
-    section = segment_criteria_section(pages)
+    section, method = segment_criteria_section(pages)
     assert len(section) > 500, "Criteria section too short"
     assert "medically necessary" in section.lower(), "Missing key phrase"
     assert "informed consent" in section.lower(), "Missing Rule 1"
@@ -54,6 +54,7 @@ def test_segmentation(pages):
     assert "psycho-social" in section.lower() or "psychosocial" in section.lower(), \
         "Missing psychosocial section"
     print(f"  ✓ Criteria section: {len(section)} chars")
+    print(f"  ✓ Initial-only selection method: {method}")
     print(f"  ✓ Contains key phrases: medically necessary, informed consent, BMI, psychosocial")
     return section
 

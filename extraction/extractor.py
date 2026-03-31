@@ -132,54 +132,127 @@ def extract_text_from_pdf(pdf_path: str) -> list[dict]:
 # but are generalizable.
 
 SECTION_PATTERNS = {
-    "criteria": [
+    # Patterns that signal the START of initial criteria
+    "initial_start": [
+        r"Initial\s+(?:Authorization\s+)?Criteria",
+        r"Initial\s+(?:Medical\s+)?Necessity\s+Criteria",
+        r"Initial\s+Treatment\s+Criteria",
+        r"Initial\s+Approval\s+Criteria",
+        r"Criteria\s+for\s+Initial\s+(?:Authorization|Approval|Treatment)",
+    ],
+    # Generic criteria start (used when no explicit "initial" section found)
+    "criteria_start": [
         r"Criteria\s+for\s+Medically\s+Necessary",
         r"Medical\s+Necessity\s+Criteria",
         r"Clinical\s+Indications",
         r"Procedures?\s+(?:are|is)\s+considered\s+medically\s+necessary\s+when",
     ],
+    # Patterns that signal the END of the initial section (continuation starts)
+    "continuation_markers": [
+        r"Continuation\s+(?:of\s+)?(?:Therapy\s+)?Criteria",
+        r"Cont(?:inuation|inued)\s+(?:Authorization|Approval|Treatment)",
+        r"Re-?[Aa]uthorization\s+Criteria",
+        r"Renewal\s+Criteria",
+        r"Maintenance\s+(?:Therapy\s+)?Criteria",
+        r"Criteria\s+for\s+Continuation",
+        r"Criteria\s+for\s+Re-?[Aa]uthorization",
+    ],
+    # General end markers (document sections after all criteria)
     "end_markers": [
         r"Experimental\s+or\s+Investigational",
         r"Not\s+Medically\s+Necessary",
         r"Applicable\s+Billing\s+Codes",
         r"Repair,\s+Replacement",
         r"Relative\s+Contraindications",
+        r"Coding\s+Information",
+        r"References",
     ],
 }
 
 
-def segment_criteria_section(pages: list[dict]) -> str:
+def segment_criteria_section(pages: list[dict]) -> tuple[str, str]:
     """
-    Pull out just the medical necessity criteria section from the full text.
-    Falls back to full document if section markers aren't found.
+    Extract the INITIAL medical necessity criteria section from the PDF text.
+
+    Selection logic (in priority order):
+      1. If an explicit "Initial Criteria" section heading exists, extract
+         from there to the next continuation/end marker.
+      2. If no explicit "Initial" heading, find the first generic criteria
+         section and extract up to any continuation marker or end marker.
+      3. If no markers found at all, return the full text.
+
+    Returns (section_text, selection_method) where selection_method is one of:
+      - "explicit_initial" — found an "Initial Criteria" heading
+      - "first_criteria_before_continuation" — first criteria section, stopped at continuation
+      - "first_criteria_section" — first criteria section, no continuation found
+      - "full_document" — no section markers found, using full text
     """
     full_text = "\n\n".join(
         f"--- PAGE {p['page']} ---\n{p['text']}" for p in pages
     )
 
-    # Find start of criteria section
-    start_idx = 0
-    for pattern in SECTION_PATTERNS["criteria"]:
+    # --- Strategy 1: Look for explicit "Initial Criteria" heading ---
+    start_idx = None
+    for pattern in SECTION_PATTERNS["initial_start"]:
         match = re.search(pattern, full_text, re.IGNORECASE)
         if match:
-            # Back up to the start of the line
             start_idx = full_text.rfind("\n", 0, match.start()) + 1
-            log.info(f"Found criteria section start at char {start_idx} via pattern: {pattern}")
+            log.info(f"Found explicit INITIAL section at char {start_idx} via: {pattern}")
             break
 
-    # Find end of criteria section
-    end_idx = len(full_text)
-    for pattern in SECTION_PATTERNS["end_markers"]:
-        match = re.search(pattern, full_text[start_idx:], re.IGNORECASE)
-        if match:
-            candidate = start_idx + match.start()
-            if candidate < end_idx and candidate > start_idx + 200:
-                end_idx = candidate
-                log.info(f"Found criteria section end at char {end_idx} via pattern: {pattern}")
+    if start_idx is not None:
+        # Find end: continuation marker or general end marker
+        end_idx = len(full_text)
+        for pattern in SECTION_PATTERNS["continuation_markers"] + SECTION_PATTERNS["end_markers"]:
+            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
+            if match:
+                candidate = start_idx + 50 + match.start()
+                if candidate < end_idx:
+                    end_idx = candidate
+                    log.info(f"Initial section ends at char {end_idx} via: {pattern}")
+        section = full_text[start_idx:end_idx].strip()
+        log.info(f"Extracted INITIAL criteria section: {len(section)} chars (explicit_initial)")
+        return section, "explicit_initial"
 
-    section = full_text[start_idx:end_idx].strip()
-    log.info(f"Extracted criteria section: {len(section)} chars")
-    return section
+    # --- Strategy 2: First generic criteria section, bounded by continuation ---
+    start_idx = None
+    for pattern in SECTION_PATTERNS["criteria_start"]:
+        match = re.search(pattern, full_text, re.IGNORECASE)
+        if match:
+            start_idx = full_text.rfind("\n", 0, match.start()) + 1
+            log.info(f"Found criteria section start at char {start_idx} via: {pattern}")
+            break
+
+    if start_idx is not None:
+        # First check for continuation markers (these end the initial section)
+        end_idx = len(full_text)
+        found_continuation = False
+        for pattern in SECTION_PATTERNS["continuation_markers"]:
+            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
+            if match:
+                candidate = start_idx + 50 + match.start()
+                if candidate < end_idx:
+                    end_idx = candidate
+                    found_continuation = True
+                    log.info(f"Found continuation marker at char {end_idx} via: {pattern}")
+
+        # Also check general end markers
+        for pattern in SECTION_PATTERNS["end_markers"]:
+            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
+            if match:
+                candidate = start_idx + 50 + match.start()
+                if candidate < end_idx:
+                    end_idx = candidate
+                    log.info(f"Found end marker at char {end_idx} via: {pattern}")
+
+        section = full_text[start_idx:end_idx].strip()
+        method = "first_criteria_before_continuation" if found_continuation else "first_criteria_section"
+        log.info(f"Extracted criteria section: {len(section)} chars ({method})")
+        return section, method
+
+    # --- Strategy 3: Full document fallback ---
+    log.warning("No criteria section markers found — using full document")
+    return full_text.strip(), "full_document"
 
 
 # ===========================================================================
@@ -674,8 +747,9 @@ def run_pipeline(
     pages = extract_text_from_pdf(pdf_path)
     log.info(f"Extracted {len(pages)} pages")
 
-    # Step 2: Segment
-    criteria_text = segment_criteria_section(pages)
+    # Step 2: Segment — extract INITIAL criteria only
+    criteria_text, selection_method = segment_criteria_section(pages)
+    log.info(f"Initial-only selection method: {selection_method}")
 
     # Step 3: LLM extraction
     client = Anthropic()
@@ -722,6 +796,7 @@ def run_pipeline(
             "source_pdf": pdf_path,
             "pages_processed": len(pages),
             "criteria_section_length": len(criteria_text),
+            "initial_only_method": selection_method,
             "schema_errors": schema_errors,
             "integrity_errors": integrity_errors,
             "validation_report": val_report,
