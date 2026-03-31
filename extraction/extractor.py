@@ -196,24 +196,24 @@ and condition as a nested tree.
 ## Output Schema
 
 ```json
-{
+{{
   "title": "<descriptive title of the policy>",
-  "insurance_name": "Oscar Health",
-  "rules": {
+  "insurance_name": "{insurance_name}",
+  "rules": {{
     "rule_id": "1",
     "rule_text": "<top-level rule text>",
     "operator": "AND" | "OR",
     "rules": [
-      {
+      {{
         "rule_id": "1.1",
         "rule_text": "...",
         // If this rule has sub-conditions:
         "operator": "AND" | "OR",
         "rules": [...]
-      }
+      }}
     ]
-  }
-}
+  }}
+}}
 ```
 
 ## CRITICAL RULES for extraction:
@@ -235,18 +235,17 @@ the following", semicolons separating items joined by "and")
 
 3. **rule_text style**: Use the CONCISE heading with key parenthetical \
 details — the short descriptor with its parenthetical list, but NOT \
-long explanatory clauses after dashes or "to" phrases. Examples:
-   - GOOD: "Basic laboratory testing (blood glucose, lipid panel, CBC, metabolic panel, blood typing, coagulation studies)"
-   - BAD: "Fasting blood glucose, fasting lipid panel, complete blood count (CBC), lipid/kidney function testing..."
-   - ALSO BAD: "Basic laboratory testing" (too short — include the parenthetical)
+long explanatory clauses after dashes or "to" phrases. Guidelines:
+   - GOOD: "Laboratory testing (blood glucose, lipid panel, CBC, metabolic panel)"
+   - BAD: "Fasting blood glucose, fasting lipid panel, complete blood count (CBC)..." (expanded form)
+   - ALSO BAD: "Laboratory testing" (too short when a parenthetical list exists in the source)
    - GOOD: "Cardiopulmonary risk evaluation"
    - BAD: "Cardiopulmonary risk evaluation - to assess as part of standard pre-operative clearance with EKG..."
-   - GOOD: "Psycho-social behavioral evaluation"
-   - BAD: "Psycho-social behavioral evaluation to determine ability to succeed..."
-   - GOOD: "BMI ≥30-34.9, see section below"
-   - BAD: "BMI ≥30-34.9" (keep short reference notes like "see section below")
-   Rule: Keep the heading + parenthetical list. Drop everything after a \
-dash " - " or "to determine/evaluate/assess" clause. \
+   - GOOD: "Behavioral evaluation"
+   - BAD: "Behavioral evaluation to determine ability to succeed and adhere to recommendations..."
+   Rule: Keep the heading + parenthetical list if one exists in the source. \
+Drop everything after a dash " - " or long "to [verb]" explanatory clause. \
+Keep short reference notes (e.g., ", see section below"). \
 Strip trailing colons and semicolons. Do NOT include trailing ":" or \
 ";" or "; and" or "; or".
 
@@ -255,18 +254,19 @@ paraphrase medical terms. Keep abbreviations and parenthetical \
 clarifications. But DO trim to the concise heading as described above.
 
 5. **Completeness**: Capture EVERY numbered/lettered item. If the document \
-says "i, ii, iii, iv, v, vi, vii, viii" — all eight must appear as \
-direct children.
+lists items i through viii, all eight must appear as direct children.
 
 6. **Flat structure for lists**: When a rule says "with ONE of the following" \
-followed by items i through viii, those items should be DIRECT children \
-of that rule with an OR operator. Do NOT create intermediate grouping nodes. \
-Example: rule 1.2.2 "BMI ≥35 with ONE of..." should have children \
-1.2.2.1 through 1.2.2.8 directly — NOT a wrapper node.
+or "ALL of the following" followed by a list of items, those items should \
+be DIRECT children of that rule. Do NOT create intermediate grouping or \
+wrapper nodes.
 
-7. **Scope**: Only extract the medical necessity criteria for the PRIMARY \
-procedure. Do NOT include revision/conversion criteria, \
-experimental procedures, or billing codes.
+7. **Scope**: Only extract the INITIAL medical necessity criteria for the \
+primary procedure/treatment. Do NOT include:
+   - Continuation/maintenance criteria (unless no initial criteria exist)
+   - Revision/conversion/repair criteria
+   - Experimental or investigational sections
+   - Billing codes, definitions, or references
 
 8. **Structural signals to watch for**:
    - "when ALL of the following criteria are met" → AND at that level
@@ -276,7 +276,7 @@ experimental procedures, or billing codes.
    - Numbered lists (1, 2, 3) with "and" → AND
    - Lettered sub-items (a, b, c) with "or" → OR
 
-Always set insurance_name to "Oscar Health".
+Set insurance_name to "{insurance_name}".
 Return ONLY valid JSON. No markdown fences, no commentary.\
 """
 
@@ -288,8 +288,7 @@ Here is the medical necessity criteria section extracted from the PDF:
 {criteria_text}
 </criteria_text>
 
-Here is an example of the EXACT output format and style expected (from a \
-similar bariatric surgery policy):
+Here is an example of the EXACT output format and style expected:
 
 <example_output>
 {example_json}
@@ -297,19 +296,18 @@ similar bariatric surgery policy):
 
 Convert the criteria text into the structured JSON rule tree. Follow the \
 example's style exactly:
-- Concise rule_text (headings, not full paragraphs)
+- Concise rule_text (headings with parenthetical details, not full paragraphs)
 - No trailing colons or semicolons in rule_text
 - Flat children under OR/AND nodes (no intermediate wrapper nodes)
 - Hierarchical numeric-only rule_ids (1, 1.1, 1.1.1, ...)
-- insurance_name must be "Oscar Health"
 - Leaf nodes must NOT have "operator" or "rules" keys
 - Return ONLY valid JSON\
 """
 
 
 EXAMPLE_JSON = json.dumps({
-    "title": "Medical Necessity Criteria for Bariatric Surgery",
-    "insurance_name": "Oscar Health",
+    "title": "Medical Necessity Criteria for [Procedure Name]",
+    "insurance_name": "[Insurance Company]",
     "rules": {
         "rule_id": "1",
         "rule_text": "Procedures are considered medically necessary when ALL of the following criteria are met",
@@ -317,16 +315,28 @@ EXAMPLE_JSON = json.dumps({
         "rules": [
             {"rule_id": "1.1", "rule_text": "Informed consent with appropriate explanation of risks, benefits, and alternatives"},
             {
-                "rule_id": "1.2", "rule_text": "Adult aged 18 years or older with documentation of", "operator": "OR",
+                "rule_id": "1.2", "rule_text": "Patient meets age and clinical requirements with documentation of",
+                "operator": "OR",
                 "rules": [
-                    {"rule_id": "1.2.1", "rule_text": "Body mass index (BMI) ≥40"},
+                    {"rule_id": "1.2.1", "rule_text": "Primary clinical threshold met"},
                     {
-                        "rule_id": "1.2.2", "rule_text": "BMI greater ≥35 with ONE of the following severe obesity-related comorbidities", "operator": "OR",
+                        "rule_id": "1.2.2", "rule_text": "Secondary threshold with ONE of the following comorbidities",
+                        "operator": "OR",
                         "rules": [
-                            {"rule_id": "1.2.2.1", "rule_text": "Clinically significant cardio-pulmonary disease (e.g. severe obstructive sleep apnea (OSA), obesity-hypoventilation syndrome (OHS))"},
-                            {"rule_id": "1.2.2.2", "rule_text": "Coronary artery disease, objectively documented via stress test, echocardiography, angiography, prior myocardial infarction, or similar"},
+                            {"rule_id": "1.2.2.1", "rule_text": "Comorbidity A (e.g. specific clinical condition)"},
+                            {"rule_id": "1.2.2.2", "rule_text": "Comorbidity B, objectively documented"},
+                            {"rule_id": "1.2.2.3", "rule_text": "Comorbidity C"},
                         ]
                     },
+                ]
+            },
+            {"rule_id": "1.3", "rule_text": "Failure of conservative/non-surgical therapy"},
+            {
+                "rule_id": "1.4", "rule_text": "Comprehensive evaluation plan",
+                "operator": "AND",
+                "rules": [
+                    {"rule_id": "1.4.1", "rule_text": "Laboratory testing (specific tests listed)"},
+                    {"rule_id": "1.4.2", "rule_text": "Specialist evaluation"},
                 ]
             },
         ]
@@ -337,6 +347,7 @@ EXAMPLE_JSON = json.dumps({
 def extract_rules_with_llm(
     client: Anthropic,
     criteria_text: str,
+    insurance_name: str = "Oscar Health",
 ) -> dict:
     """
     LLM Pass 1: Extract the rule tree from the criteria section.
@@ -346,7 +357,7 @@ def extract_rules_with_llm(
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=EXTRACTION_SYSTEM_PROMPT,
+        system=EXTRACTION_SYSTEM_PROMPT.format(insurance_name=insurance_name),
         messages=[
             {
                 "role": "user",
@@ -646,6 +657,7 @@ def run_pipeline(
     output_path: str,
     ground_truth_path: Optional[str] = None,
     skip_validation_pass: bool = False,
+    insurance_name: str = "Oscar Health",
 ) -> dict:
     """
     Full extraction pipeline:
@@ -667,7 +679,7 @@ def run_pipeline(
 
     # Step 3: LLM extraction
     client = Anthropic()
-    extracted = extract_rules_with_llm(client, criteria_text)
+    extracted = extract_rules_with_llm(client, criteria_text, insurance_name=insurance_name)
 
     # Step 4: LLM validation pass
     if not skip_validation_pass:
@@ -742,6 +754,11 @@ def main():
         action="store_true",
         help="Skip the second LLM validation pass",
     )
+    parser.add_argument(
+        "--insurance-name",
+        default="Oscar Health",
+        help="Name of the insurance company (default: Oscar Health)",
+    )
 
     args = parser.parse_args()
     run_pipeline(
@@ -749,6 +766,7 @@ def main():
         output_path=args.output,
         ground_truth_path=args.validate_against,
         skip_validation_pass=args.skip_llm_validation,
+        insurance_name=args.insurance_name,
     )
 
 
