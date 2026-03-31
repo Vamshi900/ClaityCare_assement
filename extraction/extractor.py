@@ -174,6 +174,32 @@ SECTION_PATTERNS = {
 }
 
 
+MIN_SECTION_LENGTH = 500  # Sections shorter than this are likely TOC entries, skip them
+
+
+def _find_end_boundary(full_text: str, start_idx: int) -> tuple[int, bool]:
+    """Find the nearest end boundary (continuation or general end marker).
+    Returns (end_idx, found_continuation)."""
+    end_idx = len(full_text)
+    found_continuation = False
+    for pattern in SECTION_PATTERNS["continuation_markers"]:
+        match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
+        if match:
+            candidate = start_idx + 50 + match.start()
+            if candidate < end_idx:
+                end_idx = candidate
+                found_continuation = True
+                log.info(f"Found continuation marker at char {end_idx} via: {pattern}")
+    for pattern in SECTION_PATTERNS["end_markers"]:
+        match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
+        if match:
+            candidate = start_idx + 50 + match.start()
+            if candidate < end_idx:
+                end_idx = candidate
+                log.info(f"Found end marker at char {end_idx} via: {pattern}")
+    return end_idx, found_continuation
+
+
 def segment_criteria_section(pages: list[dict]) -> tuple[str, str]:
     """
     Extract the INITIAL medical necessity criteria section from the PDF text.
@@ -184,6 +210,9 @@ def segment_criteria_section(pages: list[dict]) -> tuple[str, str]:
       2. If no explicit "Initial" heading, find the first generic criteria
          section and extract up to any continuation marker or end marker.
       3. If no markers found at all, return the full text.
+
+    If a match produces a section shorter than MIN_SECTION_LENGTH (likely a
+    table-of-contents entry), it is skipped and the next match is tried.
 
     Returns (section_text, selection_method) where selection_method is one of:
       - "explicit_initial" — found an "Initial Criteria" heading
@@ -196,63 +225,31 @@ def segment_criteria_section(pages: list[dict]) -> tuple[str, str]:
     )
 
     # --- Strategy 1: Look for explicit "Initial Criteria" heading ---
-    start_idx = None
+    # Try ALL matches, skip short sections (TOC entries)
     for pattern in SECTION_PATTERNS["initial_start"]:
-        match = re.search(pattern, full_text, re.IGNORECASE)
-        if match:
+        for match in re.finditer(pattern, full_text, re.IGNORECASE):
             start_idx = full_text.rfind("\n", 0, match.start()) + 1
-            log.info(f"Found explicit INITIAL section at char {start_idx} via: {pattern}")
-            break
+            end_idx, _ = _find_end_boundary(full_text, start_idx)
+            section = full_text[start_idx:end_idx].strip()
+            if len(section) >= MIN_SECTION_LENGTH:
+                log.info(f"Found explicit INITIAL section at char {start_idx}: {len(section)} chars")
+                return section, "explicit_initial"
+            else:
+                log.info(f"Skipping short INITIAL match at char {start_idx}: {len(section)} chars (likely TOC)")
 
-    if start_idx is not None:
-        # Find end: continuation marker or general end marker
-        end_idx = len(full_text)
-        for pattern in SECTION_PATTERNS["continuation_markers"] + SECTION_PATTERNS["end_markers"]:
-            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
-            if match:
-                candidate = start_idx + 50 + match.start()
-                if candidate < end_idx:
-                    end_idx = candidate
-                    log.info(f"Initial section ends at char {end_idx} via: {pattern}")
-        section = full_text[start_idx:end_idx].strip()
-        log.info(f"Extracted INITIAL criteria section: {len(section)} chars (explicit_initial)")
-        return section, "explicit_initial"
-
-    # --- Strategy 2: First generic criteria section, bounded by continuation ---
-    start_idx = None
+    # --- Strategy 2: Generic criteria section, bounded by continuation ---
+    # Try ALL matches, skip short sections
     for pattern in SECTION_PATTERNS["criteria_start"]:
-        match = re.search(pattern, full_text, re.IGNORECASE)
-        if match:
+        for match in re.finditer(pattern, full_text, re.IGNORECASE):
             start_idx = full_text.rfind("\n", 0, match.start()) + 1
-            log.info(f"Found criteria section start at char {start_idx} via: {pattern}")
-            break
-
-    if start_idx is not None:
-        # First check for continuation markers (these end the initial section)
-        end_idx = len(full_text)
-        found_continuation = False
-        for pattern in SECTION_PATTERNS["continuation_markers"]:
-            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
-            if match:
-                candidate = start_idx + 50 + match.start()
-                if candidate < end_idx:
-                    end_idx = candidate
-                    found_continuation = True
-                    log.info(f"Found continuation marker at char {end_idx} via: {pattern}")
-
-        # Also check general end markers
-        for pattern in SECTION_PATTERNS["end_markers"]:
-            match = re.search(pattern, full_text[start_idx + 50:], re.IGNORECASE)
-            if match:
-                candidate = start_idx + 50 + match.start()
-                if candidate < end_idx:
-                    end_idx = candidate
-                    log.info(f"Found end marker at char {end_idx} via: {pattern}")
-
-        section = full_text[start_idx:end_idx].strip()
-        method = "first_criteria_before_continuation" if found_continuation else "first_criteria_section"
-        log.info(f"Extracted criteria section: {len(section)} chars ({method})")
-        return section, method
+            end_idx, found_continuation = _find_end_boundary(full_text, start_idx)
+            section = full_text[start_idx:end_idx].strip()
+            if len(section) >= MIN_SECTION_LENGTH:
+                method = "first_criteria_before_continuation" if found_continuation else "first_criteria_section"
+                log.info(f"Found criteria section at char {start_idx}: {len(section)} chars ({method})")
+                return section, method
+            else:
+                log.info(f"Skipping short criteria match at char {start_idx}: {len(section)} chars (likely TOC)")
 
     # --- Strategy 3: Full document fallback ---
     log.warning("No criteria section markers found — using full document")
