@@ -753,12 +753,26 @@ def compare_with_ground_truth(extracted: dict, ground_truth: dict) -> dict:
 # ===========================================================================
 # Main Pipeline
 # ===========================================================================
+def _save_intermediate(intermediate_dir: Optional[str], filename: str, data) -> None:
+    """Save intermediate result to a file in the intermediate directory."""
+    if not intermediate_dir:
+        return
+    Path(intermediate_dir).mkdir(parents=True, exist_ok=True)
+    filepath = Path(intermediate_dir) / filename
+    if isinstance(data, str):
+        filepath.write_text(data, encoding="utf-8")
+    else:
+        filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    log.info(f"  → Intermediate: {filepath}")
+
+
 def run_pipeline(
     pdf_path: str,
     output_path: str,
     ground_truth_path: Optional[str] = None,
     skip_validation_pass: bool = False,
     insurance_name: str = "Oscar Health",
+    intermediate_dir: Optional[str] = None,
 ) -> dict:
     """
     Full extraction pipeline:
@@ -768,20 +782,41 @@ def run_pipeline(
     4. LLM validation
     5. Schema validation
     6. (Optional) Ground truth comparison
+
+    If intermediate_dir is set, each step's output is saved to a file:
+      step1_raw_text.txt        — full extracted text per page
+      step2_segmented.txt       — criteria section text (initial only)
+      step2_metadata.json       — selection method and section stats
+      step3_llm_pass1.json      — raw LLM extraction output
+      step4_llm_pass2.json      — corrected output + validation report
+      step5_schema_check.json   — schema + integrity errors
+      step6_gt_comparison.json  — ground truth diff (if provided)
     """
     log.info(f"Starting extraction pipeline for: {pdf_path}")
+    if intermediate_dir:
+        log.info(f"Intermediate results → {intermediate_dir}")
 
     # Step 1: Extract text
     pages = extract_text_from_pdf(pdf_path)
     log.info(f"Extracted {len(pages)} pages")
+    _save_intermediate(intermediate_dir, "step1_raw_text.txt",
+        "\n\n".join(f"=== PAGE {p['page']} ({len(p['text'])} chars) ===\n{p['text']}" for p in pages))
 
     # Step 2: Segment — extract INITIAL criteria only
     criteria_text, selection_method = segment_criteria_section(pages)
     log.info(f"Initial-only selection method: {selection_method}")
+    _save_intermediate(intermediate_dir, "step2_segmented.txt", criteria_text)
+    _save_intermediate(intermediate_dir, "step2_metadata.json", {
+        "selection_method": selection_method,
+        "section_length_chars": len(criteria_text),
+        "total_pages": len(pages),
+        "total_raw_chars": sum(len(p["text"]) for p in pages),
+    })
 
     # Step 3: LLM extraction
     client = Anthropic()
     extracted = extract_rules_with_llm(client, criteria_text, insurance_name=insurance_name)
+    _save_intermediate(intermediate_dir, "step3_llm_pass1.json", extracted)
 
     # Step 4: LLM validation pass
     if not skip_validation_pass:
@@ -792,6 +827,11 @@ def run_pipeline(
     else:
         corrected = extracted
         val_report = {"skipped": True}
+    _save_intermediate(intermediate_dir, "step4_llm_pass2.json", {
+        "corrected_rules": corrected,
+        "validation_report": val_report,
+        "changes_from_pass1": corrected != extracted,
+    })
 
     # Step 5: Schema validation
     schema_errors = validate_schema(corrected)
@@ -804,6 +844,12 @@ def run_pipeline(
         log.warning(f"Total validation errors: {len(all_errors)}")
     else:
         log.info("All validation checks passed ✓")
+    _save_intermediate(intermediate_dir, "step5_schema_check.json", {
+        "schema_errors": schema_errors,
+        "integrity_errors": integrity_errors,
+        "total_errors": len(all_errors),
+        "passed": len(all_errors) == 0,
+    })
 
     # Step 6: Ground truth comparison
     gt_report = None
@@ -816,8 +862,9 @@ def run_pipeline(
         log.info(f"Extra rules: {gt_report['extra_rules']}")
         log.info(f"Text mismatches: {len(gt_report['text_mismatches'])}")
         log.info(f"Operator mismatches: {len(gt_report['operator_mismatches'])}")
+        _save_intermediate(intermediate_dir, "step6_gt_comparison.json", gt_report)
 
-    # Save output
+    # Save final output
     output = {
         "extracted_rules": corrected,
         "metadata": {
@@ -825,6 +872,7 @@ def run_pipeline(
             "pages_processed": len(pages),
             "criteria_section_length": len(criteria_text),
             "initial_only_method": selection_method,
+            "model": MODEL,
             "schema_errors": schema_errors,
             "integrity_errors": integrity_errors,
             "validation_report": val_report,
@@ -862,6 +910,10 @@ def main():
         default="Oscar Health",
         help="Name of the insurance company (default: Oscar Health)",
     )
+    parser.add_argument(
+        "--intermediate-dir",
+        help="Directory to save intermediate results from each pipeline step",
+    )
 
     args = parser.parse_args()
     run_pipeline(
@@ -870,6 +922,7 @@ def main():
         ground_truth_path=args.validate_against,
         skip_validation_pass=args.skip_llm_validation,
         insurance_name=args.insurance_name,
+        intermediate_dir=args.intermediate_dir,
     )
 
 
