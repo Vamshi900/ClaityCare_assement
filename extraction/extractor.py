@@ -453,12 +453,14 @@ def extract_rules_with_llm(
         }
     ]
 
+    system_prompt = EXTRACTION_SYSTEM_PROMPT.format(insurance_name=insurance_name)
+
     last_error = None
     for attempt in range(1, LLM_MAX_RETRIES + 1):
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
-            system=EXTRACTION_SYSTEM_PROMPT.format(insurance_name=insurance_name),
+            system=system_prompt,
             messages=messages,
         )
 
@@ -467,6 +469,9 @@ def extract_rules_with_llm(
         try:
             result = _parse_llm_json(raw)
             log.info(f"Pass 1 complete (attempt {attempt}). Top-level keys: {list(result.keys())}")
+            # Attach prompts for intermediate logging
+            result["_llm_input"] = {"system": system_prompt, "messages": messages}
+            result["_llm_raw_output"] = raw
             return result
         except json.JSONDecodeError as e:
             last_error = e
@@ -569,35 +574,40 @@ def validate_and_fix_with_llm(
     """
     log.info("LLM Pass 2: Validating extraction...")
 
+    user_content = VALIDATION_USER_PROMPT.format(
+        criteria_text=criteria_text,
+        extracted_json=json.dumps(extracted, indent=2),
+    )
+    messages = [{"role": "user", "content": user_content}]
+
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=VALIDATION_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": VALIDATION_USER_PROMPT.format(
-                    criteria_text=criteria_text,
-                    extracted_json=json.dumps(extracted, indent=2),
-                ),
-            }
-        ],
+        messages=messages,
     )
 
     raw = response.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
+    # Attach prompts for intermediate logging
+    _llm_io = {
+        "system": VALIDATION_SYSTEM_PROMPT,
+        "messages": messages,
+        "raw_output": raw,
+    }
+
     try:
         result = json.loads(raw)
     except json.JSONDecodeError as e:
         log.error(f"Validation pass failed to parse: {e}")
         log.error(f"Raw output (first 500 chars): {raw[:500]}")
-        # Fall back to original extraction
-        return extracted, {"issues_found": ["Validation pass failed"], "is_valid": False}
+        return extracted, {"issues_found": ["Validation pass failed"], "is_valid": False, "_llm_io": _llm_io}
 
     corrected = result.get("corrected_rules", extracted)
     report = result.get("validation_report", {})
+    report["_llm_io"] = _llm_io
 
     issues = report.get("issues_found", [])
     log.info(f"Pass 2 complete. Issues found: {len(issues)}")
@@ -816,21 +826,38 @@ def run_pipeline(
     # Step 3: LLM extraction
     client = Anthropic()
     extracted = extract_rules_with_llm(client, criteria_text, insurance_name=insurance_name)
-    _save_intermediate(intermediate_dir, "step3_llm_pass1.json", extracted)
+
+    # Pop LLM I/O metadata before saving the clean result
+    pass1_input = extracted.pop("_llm_input", None)
+    pass1_raw = extracted.pop("_llm_raw_output", None)
+    _save_intermediate(intermediate_dir, "step3_llm_pass1.json", {
+        "input": pass1_input,
+        "output": extracted,
+        "raw_llm_response": pass1_raw,
+    })
 
     # Step 4: LLM validation pass
     if not skip_validation_pass:
+        # Strip _llm_input from extracted before sending to Pass 2
         corrected, val_report = validate_and_fix_with_llm(
             client, criteria_text, extracted
         )
-        log.info(f"Validation report: {json.dumps(val_report, indent=2)}")
+        log.info(f"Validation report: {json.dumps({k: v for k, v in val_report.items() if k != '_llm_io'}, indent=2)}")
     else:
         corrected = extracted
         val_report = {"skipped": True}
+
+    # Pop LLM I/O from val_report before saving clean metadata
+    pass2_io = val_report.pop("_llm_io", None)
     _save_intermediate(intermediate_dir, "step4_llm_pass2.json", {
-        "corrected_rules": corrected,
-        "validation_report": val_report,
-        "changes_from_pass1": corrected != extracted,
+        "input": pass2_io.get("system") if pass2_io else None,
+        "input_messages": pass2_io.get("messages") if pass2_io else None,
+        "raw_llm_response": pass2_io.get("raw_output") if pass2_io else None,
+        "output": {
+            "corrected_rules": corrected,
+            "validation_report": val_report,
+            "changes_from_pass1": corrected != extracted,
+        },
     })
 
     # Step 5: Schema validation
