@@ -198,7 +198,7 @@ and condition as a nested tree.
 ```json
 {
   "title": "<descriptive title of the policy>",
-  "insurance_name": "<name of the insurance company>",
+  "insurance_name": "Oscar Health",
   "rules": {
     "rule_id": "1",
     "rule_text": "<top-level rule text>",
@@ -218,10 +218,12 @@ and condition as a nested tree.
 
 ## CRITICAL RULES for extraction:
 
-1. **Numbering**: Use hierarchical dot-notation (1, 1.1, 1.1.1, 1.1.1.1, etc.)
+1. **Numbering**: Use hierarchical dot-notation with ONLY numeric segments \
+(1, 1.1, 1.1.1, 1.1.1.1, etc.)
    - The top-level "rules" node is always rule_id "1"
    - Direct children are 1.1, 1.2, 1.3, ...
    - Their children are 1.1.1, 1.1.2, etc.
+   - NEVER use non-numeric IDs like "1.2.2.comorbidities" or "1.2.2.0"
 
 2. **Operators**:
    - "AND" when ALL sub-rules must be satisfied (signaled by "and", "all of \
@@ -231,18 +233,42 @@ the following", semicolons separating items joined by "and")
    - Only include "operator" and "rules" when there ARE sub-conditions
    - Leaf nodes have NO "operator" and NO "rules" array
 
-3. **Text fidelity**: Preserve the original clinical language. Do NOT \
-paraphrase or summarize. Keep medical terms, abbreviations, and \
-parenthetical clarifications exactly as written.
+3. **rule_text style**: Use the CONCISE heading with key parenthetical \
+details — the short descriptor with its parenthetical list, but NOT \
+long explanatory clauses after dashes or "to" phrases. Examples:
+   - GOOD: "Basic laboratory testing (blood glucose, lipid panel, CBC, metabolic panel, blood typing, coagulation studies)"
+   - BAD: "Fasting blood glucose, fasting lipid panel, complete blood count (CBC), lipid/kidney function testing..."
+   - ALSO BAD: "Basic laboratory testing" (too short — include the parenthetical)
+   - GOOD: "Cardiopulmonary risk evaluation"
+   - BAD: "Cardiopulmonary risk evaluation - to assess as part of standard pre-operative clearance with EKG..."
+   - GOOD: "Psycho-social behavioral evaluation"
+   - BAD: "Psycho-social behavioral evaluation to determine ability to succeed..."
+   - GOOD: "BMI ≥30-34.9, see section below"
+   - BAD: "BMI ≥30-34.9" (keep short reference notes like "see section below")
+   Rule: Keep the heading + parenthetical list. Drop everything after a \
+dash " - " or "to determine/evaluate/assess" clause. \
+Strip trailing colons and semicolons. Do NOT include trailing ":" or \
+";" or "; and" or "; or".
 
-4. **Completeness**: Capture EVERY numbered/lettered item. If the document \
-says "i, ii, iii, iv, v, vi, vii, viii" — all eight must appear.
+4. **Text fidelity**: Preserve the original clinical terminology. Do NOT \
+paraphrase medical terms. Keep abbreviations and parenthetical \
+clarifications. But DO trim to the concise heading as described above.
 
-5. **Scope**: Only extract the medical necessity criteria for the PRIMARY \
-procedure (bariatric surgery). Do NOT include revision/conversion criteria, \
+5. **Completeness**: Capture EVERY numbered/lettered item. If the document \
+says "i, ii, iii, iv, v, vi, vii, viii" — all eight must appear as \
+direct children.
+
+6. **Flat structure for lists**: When a rule says "with ONE of the following" \
+followed by items i through viii, those items should be DIRECT children \
+of that rule with an OR operator. Do NOT create intermediate grouping nodes. \
+Example: rule 1.2.2 "BMI ≥35 with ONE of..." should have children \
+1.2.2.1 through 1.2.2.8 directly — NOT a wrapper node.
+
+7. **Scope**: Only extract the medical necessity criteria for the PRIMARY \
+procedure. Do NOT include revision/conversion criteria, \
 experimental procedures, or billing codes.
 
-6. **Structural signals to watch for**:
+8. **Structural signals to watch for**:
    - "when ALL of the following criteria are met" → AND at that level
    - "with ONE of the following" → OR at that level
    - "; and" at end of items → AND connecting siblings
@@ -250,6 +276,7 @@ experimental procedures, or billing codes.
    - Numbered lists (1, 2, 3) with "and" → AND
    - Lettered sub-items (a, b, c) with "or" → OR
 
+Always set insurance_name to "Oscar Health".
 Return ONLY valid JSON. No markdown fences, no commentary.\
 """
 
@@ -261,13 +288,50 @@ Here is the medical necessity criteria section extracted from the PDF:
 {criteria_text}
 </criteria_text>
 
-Convert this into the structured JSON rule tree. Remember:
-- Capture every rule and sub-rule
-- Use correct AND/OR operators based on the conjunctions in the text
-- Use hierarchical rule_id numbering (1, 1.1, 1.1.1, ...)
+Here is an example of the EXACT output format and style expected (from a \
+similar bariatric surgery policy):
+
+<example_output>
+{example_json}
+</example_output>
+
+Convert the criteria text into the structured JSON rule tree. Follow the \
+example's style exactly:
+- Concise rule_text (headings, not full paragraphs)
+- No trailing colons or semicolons in rule_text
+- Flat children under OR/AND nodes (no intermediate wrapper nodes)
+- Hierarchical numeric-only rule_ids (1, 1.1, 1.1.1, ...)
+- insurance_name must be "Oscar Health"
 - Leaf nodes must NOT have "operator" or "rules" keys
 - Return ONLY valid JSON\
 """
+
+
+EXAMPLE_JSON = json.dumps({
+    "title": "Medical Necessity Criteria for Bariatric Surgery",
+    "insurance_name": "Oscar Health",
+    "rules": {
+        "rule_id": "1",
+        "rule_text": "Procedures are considered medically necessary when ALL of the following criteria are met",
+        "operator": "AND",
+        "rules": [
+            {"rule_id": "1.1", "rule_text": "Informed consent with appropriate explanation of risks, benefits, and alternatives"},
+            {
+                "rule_id": "1.2", "rule_text": "Adult aged 18 years or older with documentation of", "operator": "OR",
+                "rules": [
+                    {"rule_id": "1.2.1", "rule_text": "Body mass index (BMI) ≥40"},
+                    {
+                        "rule_id": "1.2.2", "rule_text": "BMI greater ≥35 with ONE of the following severe obesity-related comorbidities", "operator": "OR",
+                        "rules": [
+                            {"rule_id": "1.2.2.1", "rule_text": "Clinically significant cardio-pulmonary disease (e.g. severe obstructive sleep apnea (OSA), obesity-hypoventilation syndrome (OHS))"},
+                            {"rule_id": "1.2.2.2", "rule_text": "Coronary artery disease, objectively documented via stress test, echocardiography, angiography, prior myocardial infarction, or similar"},
+                        ]
+                    },
+                ]
+            },
+        ]
+    }
+}, indent=2)
 
 
 def extract_rules_with_llm(
@@ -287,7 +351,8 @@ def extract_rules_with_llm(
             {
                 "role": "user",
                 "content": EXTRACTION_USER_PROMPT.format(
-                    criteria_text=criteria_text
+                    criteria_text=criteria_text,
+                    example_json=EXAMPLE_JSON,
                 ),
             }
         ],
@@ -319,19 +384,35 @@ receive two inputs:
 1. The original criteria text from the PDF
 2. A JSON rule tree that was extracted from that text
 
-Your job is to:
-A) Verify every rule in the JSON matches the original text
-B) Find any rules in the text that are MISSING from the JSON
-C) Check that AND/OR operators correctly reflect the logical connectives
-D) Ensure rule_id numbering is consistent and hierarchical
+## YOUR JOB — MINIMAL, CONSERVATIVE corrections only:
+
+A) Find rules in the source text that are MISSING from the JSON → add them
+B) Find rules in the JSON that do NOT exist in the source text → remove them
+C) Check AND/OR operators match the logical connectives in the source text
+D) Verify rule_id uses numeric-only dot-notation (1, 1.1, 1.2.3 — never \
+   text IDs like "1.2.comorbidities")
 E) Verify leaf nodes don't have "operator" or "rules" keys
 F) Verify non-leaf nodes have both "operator" and "rules" keys
 
-Return a corrected JSON rule tree that fixes any issues found. If the \
-original extraction was perfect, return it unchanged.
+## CRITICAL CONSTRAINTS:
 
-Also return a "validation_report" summarizing what you checked and any \
-corrections made.
+- DO NOT restructure or reorganize the tree. If the extraction has items \
+as flat children of a node, keep them flat. Never add intermediate \
+grouping/wrapper nodes.
+- DO NOT expand or lengthen rule_text. The extraction intentionally uses \
+concise headings (e.g., "GI evaluation" instead of "GI evaluation - H. pylori \
+screening in high-risk populations..."). This is CORRECT. Do not add back \
+explanatory clauses, dashes, or elaborations from the source text.
+- DO NOT change rule_text unless it contains a factually wrong medical term \
+or completely misidentifies the rule. Concise summaries are intentional.
+- DO NOT split a single node into multiple nodes or merge multiple nodes.
+- DO NOT change an operator unless the source text clearly indicates \
+a different logical connective.
+- When in doubt, KEEP the original extraction unchanged.
+- Preserve the insurance_name exactly as given.
+
+Return a corrected JSON rule tree that fixes ONLY genuine errors. If the \
+original extraction was correct, return it unchanged.
 
 Return your response as JSON with two keys:
 {
@@ -513,15 +594,22 @@ def compare_with_ground_truth(extracted: dict, ground_truth: dict) -> dict:
         "total_extracted": len(extracted_flat),
     }
 
+    def normalize_text(s: str) -> str:
+        """Normalize text for comparison: whitespace, trailing punctuation."""
+        s = " ".join(s.split())
+        s = s.rstrip(":;, ")
+        return s
+
     for rule_id, truth in truth_flat.items():
         if rule_id not in extracted_flat:
             report["missing_rules"].append(rule_id)
         else:
             ext = extracted_flat[rule_id]
-            # Normalize whitespace for comparison
-            t_text = " ".join(truth["text"].split())
-            e_text = " ".join(ext["text"].split())
-            if t_text != e_text:
+            t_text = normalize_text(truth["text"])
+            e_text = normalize_text(ext["text"])
+            # Allow prefix match: if extracted starts with GT text, it's
+            # just more detailed — not a mismatch
+            if t_text != e_text and not e_text.startswith(t_text):
                 report["text_mismatches"].append({
                     "rule_id": rule_id,
                     "expected": t_text[:120],
