@@ -156,6 +156,10 @@ SECTION_PATTERNS = {
         r"Maintenance\s+(?:Therapy\s+)?Criteria",
         r"Criteria\s+for\s+Continuation",
         r"Criteria\s+for\s+Re-?[Aa]uthorization",
+        r"Follow[\s-]?[Uu]p\s+(?:Therapy\s+)?Criteria",
+        r"Ongoing\s+(?:Therapy\s+)?Criteria",
+        r"Reassessment\s+Criteria",
+        r"Subsequent\s+(?:Authorization\s+)?Criteria",
     ],
     # General end markers (document sections after all criteria)
     "end_markers": [
@@ -417,6 +421,17 @@ EXAMPLE_JSON = json.dumps({
 }, indent=2)
 
 
+LLM_MAX_RETRIES = 2  # Retry on malformed JSON
+
+
+def _parse_llm_json(raw: str) -> dict:
+    """Strip markdown fences and parse JSON from LLM output."""
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    return json.loads(raw)
+
+
 def extract_rules_with_llm(
     client: Anthropic,
     criteria_text: str,
@@ -424,39 +439,52 @@ def extract_rules_with_llm(
 ) -> dict:
     """
     LLM Pass 1: Extract the rule tree from the criteria section.
+    Retries up to LLM_MAX_RETRIES times if the LLM returns malformed JSON.
     """
     log.info("LLM Pass 1: Extracting rule tree...")
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=MAX_TOKENS,
-        system=EXTRACTION_SYSTEM_PROMPT.format(insurance_name=insurance_name),
-        messages=[
-            {
-                "role": "user",
-                "content": EXTRACTION_USER_PROMPT.format(
-                    criteria_text=criteria_text,
-                    example_json=EXAMPLE_JSON,
-                ),
-            }
-        ],
-    )
+    messages = [
+        {
+            "role": "user",
+            "content": EXTRACTION_USER_PROMPT.format(
+                criteria_text=criteria_text,
+                example_json=EXAMPLE_JSON,
+            ),
+        }
+    ]
 
-    raw = response.content[0].text.strip()
+    last_error = None
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=EXTRACTION_SYSTEM_PROMPT.format(insurance_name=insurance_name),
+            messages=messages,
+        )
 
-    # Strip markdown fences if model included them
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw)
+        raw = response.content[0].text.strip()
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError as e:
-        log.error(f"Failed to parse LLM output as JSON: {e}")
-        log.error(f"Raw output (first 500 chars): {raw[:500]}")
-        raise
+        try:
+            result = _parse_llm_json(raw)
+            log.info(f"Pass 1 complete (attempt {attempt}). Top-level keys: {list(result.keys())}")
+            return result
+        except json.JSONDecodeError as e:
+            last_error = e
+            log.warning(f"Pass 1 attempt {attempt}/{LLM_MAX_RETRIES}: malformed JSON — {e}")
+            log.warning(f"Raw output (first 300 chars): {raw[:300]}")
 
-    log.info(f"Pass 1 complete. Top-level keys: {list(result.keys())}")
-    return result
+            if attempt < LLM_MAX_RETRIES:
+                # Add the failed response and a correction prompt for the retry
+                messages.append({"role": "assistant", "content": raw})
+                messages.append({
+                    "role": "user",
+                    "content": "Your previous response was not valid JSON. "
+                    "Please return ONLY valid JSON with no markdown fences, "
+                    "no commentary, and no trailing commas.",
+                })
+
+    log.error(f"Pass 1 failed after {LLM_MAX_RETRIES} attempts: {last_error}")
+    raise last_error
 
 
 # ===========================================================================
